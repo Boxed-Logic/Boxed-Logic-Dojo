@@ -10,7 +10,7 @@ python train.py --config path/to/config.json
 ```
 
 All hyperparameters are read from `config.json` (the single source of truth). Defaults:
-- **Model:** `Qwen/Qwen2.5-1.5B-Instruct`
+- **Model:** `ibm-granite/granite-4.0-h-350m`
 - **Output:** `./gsm8k_output`
 
 ## Evaluation

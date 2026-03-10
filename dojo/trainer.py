@@ -50,7 +50,7 @@ class GRPOTrainer:
         torch.manual_seed(config.seed)
 
         # ── Tokenizer ────────────────────────────────────────────────────────
-        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
@@ -69,6 +69,7 @@ class GRPOTrainer:
             config.model_name,
             torch_dtype=_DTYPE_MAP[config.torch_dtype],
             device_map=config.device,
+            trust_remote_code=True,
         )
 
         if config.use_gradient_checkpointing:

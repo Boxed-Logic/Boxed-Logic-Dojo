@@ -96,7 +96,7 @@ def main():
         rows = rows[: cfg["limit"]]
 
     config = _make_eval_config(model, cfg)
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 

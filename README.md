@@ -176,6 +176,35 @@ load_dataset("train.jsonl")              # local JSONL file
 load_dataset("gsm8k", split="train")     # HuggingFace dataset
 ```
 
+## Granite Hybrid (Mamba) Models
+
+Granite hybrid models like `ibm-granite/granite-4.0-h-350m` use a Mamba2-attention hybrid architecture. They require extra dependencies that must be installed separately:
+
+```bash
+pip install causal-conv1d --no-build-isolation --no-deps
+pip install mamba-ssm --no-build-isolation --no-deps
+```
+
+These must be installed **after** torch so they build against the correct CUDA version. The `--no-build-isolation --no-deps` flags ensure they use the torch already in your environment.
+
+### LoRA target modules
+
+Granite hybrid models have three types of trainable layers:
+
+| Layer type | Modules | Present in |
+|------------|---------|------------|
+| Attention | `q_proj`, `k_proj`, `v_proj`, `o_proj` | Attention layers only (4 of 32 in the 350M) |
+| Shared MLP | `shared_mlp.input_linear`, `shared_mlp.output_linear` | All 32 layers |
+| Mamba | `mamba.in_proj` | Mamba layers only (28 of 32 in the 350M) |
+
+> **Note:** Only `mamba.in_proj` can be targeted in Mamba layers — `mamba.out_proj` cannot be used as a LoRA target because Mamba's fused output kernels are incompatible with LoRA's low-rank decomposition. Attempting to target `out_proj` will error during training.
+
+Example config:
+
+```json
+"target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "shared_mlp.input_linear", "shared_mlp.output_linear", "mamba.in_proj"]
+```
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style guidelines, and the pull request process.
