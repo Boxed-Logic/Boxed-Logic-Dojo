@@ -1,0 +1,46 @@
+{
+  "train": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "data": "train.jsonl",
+    "output_dir": "./gsm8k_output",
+
+    "lora_rank": 16,
+    "target_modules": ["q_proj", "v_proj"],
+
+    "num_generations": 8,
+    "max_turns": 5,
+    "max_completion_length": 512,
+    "max_total_tokens": 2048,
+
+    "batch_size": 4,
+    "num_epochs": 2,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 0.00005,
+
+    "epsilon": 0.2,
+    "beta": 0.01,
+    "temperature": 0.9,
+    "top_p": 0.95,
+
+    "vllm_gpu_memory_utilization": 0.5,
+    "vllm_sync_every": 20,
+    "vllm_enable_sleep_mode": true,
+
+    "seed": 42,
+    "device": "auto",
+    "torch_dtype": "bfloat16",
+    "log_every": 1,
+    "wandb_project": null
+  },
+  "eval": {
+    "model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "test_data": "test.jsonl",
+
+    "batch_size": 32,
+    "max_turns": 5,
+    "max_completion_length": 512,
+    "max_total_tokens": 2048,
+
+    "limit": null
+  }
+}
