@@ -156,12 +156,13 @@ class GRPOTrainer:
                 # ── Phase 1: Rollout ──────────────────────────────────────────
                 self.model.eval()
 
-                if cfg.vllm_enable_sleep_mode:
-                    self.rollout_engine.wake_up()
-
                 if self._vllm_needs_reload:
-                    self._reload_vllm_weights()
+                    # Reinitialize engine from sync dir (starts awake).
+                    # Don't wake the old engine — it's about to be destroyed.
+                    self.rollout_engine.reinitialize()
                     self._vllm_needs_reload = False
+                elif cfg.vllm_enable_sleep_mode:
+                    self.rollout_engine.wake_up()
 
                 all_episode_groups = self.rollout_engine.rollout_batch(batch_rows)
                 for episodes, row in zip(all_episode_groups, batch_rows):
@@ -310,15 +311,6 @@ class GRPOTrainer:
         """Merge LoRA → save with clean weight names → mark for vLLM reload."""
         sync_lora_weights_to_disk(self.model, self.config.model_name, self.config.output_dir)
         self._vllm_needs_reload = True
-
-    def _reload_vllm_weights(self) -> None:
-        """Tell vLLM to reload weights from disk after wake_up.
-
-        vLLM was initialized from the sync directory, so reload_weights
-        reads directly from there — no update_config needed.
-        """
-        self.rollout_engine.llm.collective_rpc("reload_weights")
-        logger.info("vLLM weights reloaded from sync dir")
 
     def _push_to_hub(self, tag: str) -> None:
         """Push PEFT adapter weights (not base weights) to the HF Hub."""

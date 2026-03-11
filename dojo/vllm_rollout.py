@@ -158,6 +158,33 @@ class VLLMRolloutEngine:
 
         return groups
 
+    def reinitialize(self) -> None:
+        """Destroy and recreate the vLLM engine from the sync directory.
+
+        This is used instead of reload_weights() because vLLM's in-place
+        weight reload corrupts hybrid Mamba models (producing gibberish).
+        A fresh LLM() uses the same initial-load code path that works.
+        """
+        import gc
+        import torch
+        from vllm import LLM
+
+        cfg = self.config
+        sync_dir = str(Path(cfg.output_dir).resolve() / ".vllm_sync")
+
+        del self.llm
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        self.llm = LLM(
+            model=sync_dir,
+            gpu_memory_utilization=cfg.vllm_gpu_memory_utilization,
+            enforce_eager=True,
+            enable_sleep_mode=cfg.vllm_enable_sleep_mode,
+            trust_remote_code=True,
+        )
+        logger.info("vLLM engine reinitialized from %s", sync_dir)
+
     def sleep(self) -> None:
         """Offload vLLM weights to CPU to free GPU memory for training."""
         self.llm.sleep(level=1)
