@@ -33,15 +33,15 @@ class GRPOConfig:
     temperature: float
     top_p: float
 
-    # Scheduler
-    warmup_steps: int = 20
-
     # Misc
     seed: int
     device: str
     torch_dtype: str  # "bfloat16", "float16", "float32", or "auto"
     output_dir: str
     log_every: int
+
+    # Scheduler
+    warmup_steps: int = 20
 
     # vLLM
     vllm_gpu_memory_utilization: float = 0.4  # leave room for training
