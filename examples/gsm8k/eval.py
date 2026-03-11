@@ -10,8 +10,8 @@ Usage:
     python eval.py --model ./gsm8k_output      # override model (post-training eval)
 """
 from __future__ import annotations
-import multiprocessing
-multiprocessing.set_start_method("spawn", force=True)
+import os
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 import argparse
 import json
