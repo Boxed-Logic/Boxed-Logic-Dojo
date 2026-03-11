@@ -56,10 +56,14 @@ def sync_lora_weights_to_disk(model, model_name: str, output_dir: str) -> Path:
         if p.is_symlink():
             p.unlink()
 
-    # 6. Save weights as a single safetensors file
+    # 6. Verify saved weight names match the original model's names.
+    #    Name mismatches cause vLLM reload_weights to silently skip params.
+    _verify_weight_names(state_dict, model_name, sync_dir)
+
+    # 7. Save weights as a single safetensors file
     safetensors.torch.save_file(state_dict, str(sync_dir / "model.safetensors"))
 
-    # 7. Write the index file so vLLM finds the weights
+    # 8. Write the index file so vLLM finds the weights
     total_size = sum(t.numel() * t.element_size() for t in state_dict.values())
     index = {
         "metadata": {"total_size": total_size},
@@ -69,3 +73,60 @@ def sync_lora_weights_to_disk(model, model_name: str, output_dir: str) -> Path:
 
     logger.info("Merged weights saved to %s for vLLM reload", sync_dir)
     return sync_dir
+
+
+def _verify_weight_names(
+    state_dict: dict[str, "torch.Tensor"],
+    model_name: str,
+    sync_dir: Path,
+) -> None:
+    """Compare saved weight names against the original model's safetensors names.
+
+    Logs warnings for any mismatches, which would cause vLLM reload_weights
+    to silently skip parameters.
+    """
+    import torch  # noqa: F811
+
+    # Collect original weight names from the HF safetensors index
+    original_names: set[str] = set()
+    try:
+        idx_path = hf_hub_download(model_name, "model.safetensors.index.json")
+        with open(idx_path) as f:
+            original_index = json.load(f)
+        original_names = set(original_index.get("weight_map", {}).keys())
+    except Exception:
+        # Single-file model — read keys directly from the safetensors file
+        try:
+            sf_path = hf_hub_download(model_name, "model.safetensors")
+            from safetensors import safe_open
+            with safe_open(sf_path, framework="pt") as f:
+                original_names = set(f.keys())
+        except Exception as e:
+            logger.warning("Cannot verify weight names against original model: %s", e)
+            return
+
+    saved_names = set(state_dict.keys())
+
+    missing_from_save = original_names - saved_names
+    extra_in_save = saved_names - original_names
+
+    if missing_from_save:
+        logger.error(
+            "WEIGHT SYNC: %d weights in original model MISSING from saved file: %s",
+            len(missing_from_save),
+            sorted(missing_from_save)[:20],
+        )
+    if extra_in_save:
+        logger.warning(
+            "WEIGHT SYNC: %d extra weights in saved file not in original model: %s",
+            len(extra_in_save),
+            sorted(extra_in_save)[:20],
+        )
+    if not missing_from_save and not extra_in_save:
+        logger.info("WEIGHT SYNC: all %d weight names match original model", len(saved_names))
+    else:
+        logger.info(
+            "WEIGHT SYNC: saved=%d, original=%d, missing=%d, extra=%d",
+            len(saved_names), len(original_names),
+            len(missing_from_save), len(extra_in_save),
+        )

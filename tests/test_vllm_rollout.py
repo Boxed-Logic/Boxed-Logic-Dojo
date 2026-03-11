@@ -83,12 +83,16 @@ def _make_engine(cfg=None, tokenizer=None, registry=None, store=None, llm_mock=N
         if store is None:
             store = EpisodeStore()
 
-        engine = VLLMRolloutEngine(
-            tokenizer=tokenizer,
-            config=cfg,
-            registry=registry,
-            store=store,
-        )
+        with patch.object(
+            VLLMRolloutEngine, "_prepare_sync_dir",
+            staticmethod(lambda config: config.model_name),
+        ):
+            engine = VLLMRolloutEngine(
+                tokenizer=tokenizer,
+                config=cfg,
+                registry=registry,
+                store=store,
+            )
     return engine, llm_mock, vllm_mod
 
 
@@ -179,12 +183,16 @@ class TestVLLMRolloutEngineInit:
 
         with patch.dict(sys.modules, {"vllm": vllm_mod}):
             from dojo.vllm_rollout import VLLMRolloutEngine
-            VLLMRolloutEngine(
-                tokenizer=MagicMock(),
-                config=cfg,
-                registry=MagicMock(schemas=[]),
-                store=EpisodeStore(),
-            )
+            with patch.object(
+                VLLMRolloutEngine, "_prepare_sync_dir",
+                staticmethod(lambda config: config.model_name),
+            ):
+                VLLMRolloutEngine(
+                    tokenizer=MagicMock(),
+                    config=cfg,
+                    registry=MagicMock(schemas=[]),
+                    store=EpisodeStore(),
+                )
 
         sp_cls.assert_called_once_with(temperature=0.7, top_p=0.9, max_tokens=128)
 

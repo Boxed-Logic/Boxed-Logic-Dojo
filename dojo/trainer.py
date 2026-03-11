@@ -266,6 +266,18 @@ class GRPOTrainer:
                         f"step={global_step} loss={loss.item():.4f} "
                         f"mean_reward={mean_reward:.3f} reward_std={reward_std:.3f}"
                     )
+                    # Diagnostic: log sample generation when all rewards are 0
+                    if mean_reward == 0.0 and flat_episodes:
+                        sample = flat_episodes[0]
+                        last_asst = None
+                        for msg in reversed(sample.messages):
+                            if msg.get("role") == "assistant":
+                                last_asst = (msg.get("content") or "")[:300]
+                                break
+                        logger.warning(
+                            "REWARD COLLAPSE at step=%d — sample generation: %r",
+                            global_step, last_asst,
+                        )
                     if self._wandb is not None:
                         self._wandb.log(
                             {
