@@ -1,12 +1,16 @@
 """vLLM-based rollout engine — mirrors the RolloutEngine interface."""
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from .config import GRPOConfig
 from .episode import Episode, EpisodeStore
 from .rollout import process_tool_calls
 from .tools import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class VLLMRolloutEngine:
@@ -38,8 +42,15 @@ class VLLMRolloutEngine:
             max_tokens=config.max_completion_length,
         )
 
+        # Initialize vLLM from the sync directory so reload_weights works
+        # without update_config (which can fail on models with non-init
+        # dataclass fields like attention_chunk_size on Granite).
+        model_path = config.model_name
+        if config.vllm_enable_sleep_mode:
+            model_path = self._prepare_sync_dir(config)
+
         self.llm = LLM(
-            model=config.model_name,
+            model=model_path,
             gpu_memory_utilization=config.vllm_gpu_memory_utilization,
             enforce_eager=True,  # required for in-place weight updates
             enable_sleep_mode=config.vllm_enable_sleep_mode,
@@ -48,10 +59,37 @@ class VLLMRolloutEngine:
 
         self._episode_init_fn = episode_init_fn
 
-        # Size pool for rollout_batch: up to batch_size * num_generations concurrent tool calls
+        # Size pool for rollout_batch
         self._executor = ThreadPoolExecutor(
             max_workers=config.batch_size * config.num_generations * 2
         )
+
+    @staticmethod
+    def _prepare_sync_dir(config: GRPOConfig) -> str:
+        """Pre-populate the sync directory with the original model snapshot.
+
+        Returns the sync_dir path for vLLM to load from.  By initializing
+        vLLM from this directory, reload_weights() can re-read updated
+        weights without needing collective_rpc("update_config").
+        """
+        import shutil
+        from huggingface_hub import snapshot_download
+
+        sync_dir = Path(config.output_dir).resolve() / ".vllm_sync"
+
+        # Always start fresh so vLLM loads base model weights matching
+        # the fresh LoRA (stale merged weights from a prior run would
+        # cause a mismatch).
+        if sync_dir.exists():
+            shutil.rmtree(sync_dir)
+        sync_dir.mkdir(parents=True, exist_ok=True)
+
+        snapshot_path = Path(snapshot_download(config.model_name))
+        for src_file in snapshot_path.iterdir():
+            (sync_dir / src_file.name).symlink_to(src_file)
+        logger.info("Prepared vLLM sync dir from %s", config.model_name)
+
+        return str(sync_dir)
 
     def rollout_group(
         self, system_prompt: str, user_prompt: str, row: dict | None = None

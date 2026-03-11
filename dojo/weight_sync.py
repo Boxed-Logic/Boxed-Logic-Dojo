@@ -40,17 +40,26 @@ def sync_lora_weights_to_disk(model, model_name: str, output_dir: str) -> Path:
 
     # 4. Copy config.json from original model (vLLM needs it to validate)
     config_dst = sync_dir / "config.json"
-    if not config_dst.exists():
+    if not config_dst.exists() or config_dst.is_symlink():
+        # Unlink symlink first to avoid writing through to the HF cache
+        if config_dst.is_symlink():
+            config_dst.unlink()
         try:
             src = hf_hub_download(model_name, "config.json")
             shutil.copyfile(src, config_dst)
         except Exception:
             model.get_base_model().config.to_json_file(str(config_dst))
 
-    # 5. Save weights as a single safetensors file
+    # 5. Remove symlinked weight files so we don't write through to HF cache,
+    #    and clean up stale shards that won't match our single-file layout.
+    for p in list(sync_dir.glob("model*.safetensors*")):
+        if p.is_symlink():
+            p.unlink()
+
+    # 6. Save weights as a single safetensors file
     safetensors.torch.save_file(state_dict, str(sync_dir / "model.safetensors"))
 
-    # 6. Write the index file so vLLM finds the weights
+    # 7. Write the index file so vLLM finds the weights
     total_size = sum(t.numel() * t.element_size() for t in state_dict.values())
     index = {
         "metadata": {"total_size": total_size},

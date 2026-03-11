@@ -302,29 +302,11 @@ class GRPOTrainer:
     def _reload_vllm_weights(self) -> None:
         """Tell vLLM to reload weights from disk after wake_up.
 
-        Points vLLM's model config at the sync directory containing
-        merged LoRA weights, calls reload_weights, then restores.
+        vLLM was initialized from the sync directory, so reload_weights
+        reads directly from there — no update_config needed.
         """
-        sync_dir = str(Path(self.config.output_dir).resolve() / ".vllm_sync")
-        llm = self.rollout_engine.llm
-        original_model = self.config.model_name
-
-        # Point model config at sync dir so reload_weights reads from there
-        llm.collective_rpc(
-            "update_config",
-            args=({"model_config": {"model": sync_dir}},),
-        )
-
-        # Reload weights in-place from the updated model path
-        llm.collective_rpc("reload_weights")
-
-        # Restore original model name for tokenizer / chat template lookups
-        llm.collective_rpc(
-            "update_config",
-            args=({"model_config": {"model": original_model}},),
-        )
-
-        logger.info("vLLM weights reloaded from %s", sync_dir)
+        self.rollout_engine.llm.collective_rpc("reload_weights")
+        logger.info("vLLM weights reloaded from sync dir")
 
     def _push_to_hub(self, tag: str) -> None:
         """Push PEFT adapter weights (not base weights) to the HF Hub."""
