@@ -42,6 +42,7 @@ def _make_eval_config(model: str, cfg: dict) -> GRPOConfig:
         top_p=1.0,                                      # required by vLLM when temperature=0
         vllm_gpu_memory_utilization=0.9,                # full GPU available — no training
         vllm_enable_sleep_mode=False,                   # no training loop to call wake_up()
+        vllm_enable_lora=False,                          # eval-only; no adapter swapping
         vllm_sync_every=1,                              # unused; required field
         # --- LoRA (structurally required; never used by vLLM) ---
         lora_rank=1,

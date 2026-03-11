@@ -69,7 +69,16 @@ def _make_engine(cfg=None, tokenizer=None, registry=None, store=None, llm_mock=N
         llm_mock = MagicMock()
     vllm_mod.LLM = MagicMock(return_value=llm_mock)
 
-    with patch.dict(sys.modules, {"vllm": vllm_mod}):
+    # Also inject vllm.lora.request for LoRARequest
+    lora_mod = types.ModuleType("vllm.lora.request")
+    lora_mod.LoRARequest = MagicMock()
+    lora_parent = types.ModuleType("vllm.lora")
+
+    with patch.dict(sys.modules, {
+        "vllm": vllm_mod,
+        "vllm.lora": lora_parent,
+        "vllm.lora.request": lora_mod,
+    }):
         from dojo.vllm_rollout import VLLMRolloutEngine
 
         if cfg is None:
@@ -83,16 +92,12 @@ def _make_engine(cfg=None, tokenizer=None, registry=None, store=None, llm_mock=N
         if store is None:
             store = EpisodeStore()
 
-        with patch.object(
-            VLLMRolloutEngine, "_prepare_sync_dir",
-            staticmethod(lambda config: config.model_name),
-        ):
-            engine = VLLMRolloutEngine(
-                tokenizer=tokenizer,
-                config=cfg,
-                registry=registry,
-                store=store,
-            )
+        engine = VLLMRolloutEngine(
+            tokenizer=tokenizer,
+            config=cfg,
+            registry=registry,
+            store=store,
+        )
     return engine, llm_mock, vllm_mod
 
 
@@ -117,16 +122,19 @@ class TestConfigNewFields:
         assert cfg.vllm_gpu_memory_utilization == 0.4
         assert cfg.vllm_sync_every == 1
         assert cfg.vllm_enable_sleep_mode is True
+        assert cfg.vllm_max_lora_rank is None
 
     def test_explicit_vllm_fields_accepted(self):
         cfg = GRPOConfig.from_dict(self._base(
             vllm_gpu_memory_utilization=0.6,
             vllm_sync_every=5,
             vllm_enable_sleep_mode=False,
+            vllm_max_lora_rank=64,
         ))
         assert cfg.vllm_gpu_memory_utilization == 0.6
         assert cfg.vllm_sync_every == 5
         assert cfg.vllm_enable_sleep_mode is False
+        assert cfg.vllm_max_lora_rank == 64
 
     def test_unknown_keys_ignored(self):
         cfg = GRPOConfig.from_dict(self._base(some_future_field="ignored"))
@@ -147,16 +155,29 @@ class TestConfigNewFields:
 # ── Tests: VLLMRolloutEngine initialization ───────────────────────────────────
 
 class TestVLLMRolloutEngineInit:
-    def test_llm_constructed_with_correct_args(self):
+    def test_llm_constructed_with_lora_enabled(self):
         vllm_mod = types.ModuleType("vllm")
         llm_instance = MagicMock()
         llm_cls = MagicMock(return_value=llm_instance)
         vllm_mod.LLM = llm_cls
         vllm_mod.SamplingParams = MagicMock(return_value=MagicMock())
 
-        cfg = _make_config(vllm_gpu_memory_utilization=0.5, vllm_enable_sleep_mode=False)
+        lora_mod = types.ModuleType("vllm.lora.request")
+        lora_mod.LoRARequest = MagicMock()
+        lora_parent = types.ModuleType("vllm.lora")
 
-        with patch.dict(sys.modules, {"vllm": vllm_mod}):
+        cfg = _make_config(
+            vllm_gpu_memory_utilization=0.5,
+            vllm_enable_sleep_mode=False,
+            vllm_enable_lora=True,
+            lora_rank=32,
+        )
+
+        with patch.dict(sys.modules, {
+            "vllm": vllm_mod,
+            "vllm.lora": lora_parent,
+            "vllm.lora.request": lora_mod,
+        }):
             from dojo.vllm_rollout import VLLMRolloutEngine
             engine = VLLMRolloutEngine(
                 tokenizer=MagicMock(),
@@ -169,9 +190,68 @@ class TestVLLMRolloutEngineInit:
             model="test/model",
             gpu_memory_utilization=0.5,
             enforce_eager=True,
+            enable_lora=True,
+            max_lora_rank=32,
             enable_sleep_mode=False,
             trust_remote_code=True,
         )
+
+    def test_llm_constructed_without_lora_when_disabled(self):
+        vllm_mod = types.ModuleType("vllm")
+        llm_cls = MagicMock(return_value=MagicMock())
+        vllm_mod.LLM = llm_cls
+        vllm_mod.SamplingParams = MagicMock(return_value=MagicMock())
+
+        lora_mod = types.ModuleType("vllm.lora.request")
+        lora_mod.LoRARequest = MagicMock()
+        lora_parent = types.ModuleType("vllm.lora")
+
+        cfg = _make_config(vllm_enable_lora=False)
+
+        with patch.dict(sys.modules, {
+            "vllm": vllm_mod,
+            "vllm.lora": lora_parent,
+            "vllm.lora.request": lora_mod,
+        }):
+            from dojo.vllm_rollout import VLLMRolloutEngine
+            VLLMRolloutEngine(
+                tokenizer=MagicMock(),
+                config=cfg,
+                registry=MagicMock(schemas=[]),
+                store=EpisodeStore(),
+            )
+
+        _, kwargs = llm_cls.call_args
+        assert "enable_lora" not in kwargs
+        assert "max_lora_rank" not in kwargs
+
+    def test_max_lora_rank_override(self):
+        vllm_mod = types.ModuleType("vllm")
+        llm_cls = MagicMock(return_value=MagicMock())
+        vllm_mod.LLM = llm_cls
+        vllm_mod.SamplingParams = MagicMock(return_value=MagicMock())
+
+        lora_mod = types.ModuleType("vllm.lora.request")
+        lora_mod.LoRARequest = MagicMock()
+        lora_parent = types.ModuleType("vllm.lora")
+
+        cfg = _make_config(lora_rank=32, vllm_max_lora_rank=64)
+
+        with patch.dict(sys.modules, {
+            "vllm": vllm_mod,
+            "vllm.lora": lora_parent,
+            "vllm.lora.request": lora_mod,
+        }):
+            from dojo.vllm_rollout import VLLMRolloutEngine
+            VLLMRolloutEngine(
+                tokenizer=MagicMock(),
+                config=cfg,
+                registry=MagicMock(schemas=[]),
+                store=EpisodeStore(),
+            )
+
+        _, kwargs = llm_cls.call_args
+        assert kwargs["max_lora_rank"] == 64
 
     def test_sampling_params_constructed_correctly(self):
         vllm_mod = types.ModuleType("vllm")
@@ -179,22 +259,79 @@ class TestVLLMRolloutEngineInit:
         vllm_mod.SamplingParams = sp_cls
         vllm_mod.LLM = MagicMock(return_value=MagicMock())
 
+        lora_mod = types.ModuleType("vllm.lora.request")
+        lora_mod.LoRARequest = MagicMock()
+        lora_parent = types.ModuleType("vllm.lora")
+
         cfg = _make_config(temperature=0.7, top_p=0.9, max_completion_length=128)
 
-        with patch.dict(sys.modules, {"vllm": vllm_mod}):
+        with patch.dict(sys.modules, {
+            "vllm": vllm_mod,
+            "vllm.lora": lora_parent,
+            "vllm.lora.request": lora_mod,
+        }):
             from dojo.vllm_rollout import VLLMRolloutEngine
-            with patch.object(
-                VLLMRolloutEngine, "_prepare_sync_dir",
-                staticmethod(lambda config: config.model_name),
-            ):
-                VLLMRolloutEngine(
-                    tokenizer=MagicMock(),
-                    config=cfg,
-                    registry=MagicMock(schemas=[]),
-                    store=EpisodeStore(),
-                )
+            VLLMRolloutEngine(
+                tokenizer=MagicMock(),
+                config=cfg,
+                registry=MagicMock(schemas=[]),
+                store=EpisodeStore(),
+            )
 
         sp_cls.assert_called_once_with(temperature=0.7, top_p=0.9, max_tokens=128)
+
+
+# ── Tests: LoRA adapter loading ──────────────────────────────────────────────
+
+class TestLoRAAdapterLoading:
+    def _patch_vllm(self):
+        """Patch vllm.lora.request so load_lora_adapter can import LoRARequest."""
+        lora_mod = types.ModuleType("vllm.lora.request")
+        lora_mod.LoRARequest = MagicMock()
+        lora_parent = types.ModuleType("vllm.lora")
+        vllm_mod = types.ModuleType("vllm")
+        return patch.dict(sys.modules, {
+            "vllm": vllm_mod,
+            "vllm.lora": lora_parent,
+            "vllm.lora.request": lora_mod,
+        })
+
+    def test_lora_id_increments(self):
+        engine, _, _ = _make_engine()
+        with self._patch_vllm():
+            engine.load_lora_adapter("/path/a")
+            assert engine._lora_id == 1
+            engine.load_lora_adapter("/path/b")
+            assert engine._lora_id == 2
+
+    def test_lora_request_set_after_load(self):
+        engine, _, _ = _make_engine()
+        assert engine._lora_request is None
+        with self._patch_vllm():
+            engine.load_lora_adapter("/path/adapter")
+        assert engine._lora_request is not None
+
+    def test_generate_without_lora_request(self):
+        engine, llm_mock, _ = _make_engine()
+        llm_mock.generate.return_value = [
+            _make_request_output("done"),
+            _make_request_output("done"),
+        ]
+        engine.rollout_group("sys", "prompt")
+        _, kwargs = llm_mock.generate.call_args
+        assert kwargs["lora_request"] is None
+
+    def test_generate_with_lora_request(self):
+        engine, llm_mock, _ = _make_engine()
+        with self._patch_vllm():
+            engine.load_lora_adapter("/path/adapter")
+        llm_mock.generate.return_value = [
+            _make_request_output("done"),
+            _make_request_output("done"),
+        ]
+        engine.rollout_group("sys", "prompt")
+        _, kwargs = llm_mock.generate.call_args
+        assert kwargs["lora_request"] is engine._lora_request
 
 
 # ── Tests: rollout_group — single turn, no tool call ─────────────────────────
@@ -242,8 +379,6 @@ class TestSingleTurnNoToolCall:
         assert tokenizer.apply_chat_template.call_count >= 1
         first_call_kwargs = tokenizer.apply_chat_template.call_args_list[0]
         args, kwargs = first_call_kwargs
-        # First arg is messages list
-        messages = args[0] if args else kwargs.get("conversation") or kwargs.get("messages")
         # tokenize=False should be set
         assert kwargs.get("tokenize") is False
         assert kwargs.get("add_generation_prompt") is True
@@ -356,81 +491,34 @@ class TestCleanup:
 class TestSyncWeightsToVllm:
     def _make_trainer_mock(self, tmp_path):
         """Build a minimal GRPOTrainer-like object with mocked internals."""
-        import torch
-
         trainer = MagicMock()
         config = _make_config(vllm_sync_every=5)
         config.output_dir = str(tmp_path)
         trainer.config = config
-
-        # Mock model with state_dict and adapter merge/unmerge
-        trainer.model.merge_adapter = MagicMock()
-        trainer.model.unmerge_adapter = MagicMock()
-        trainer.model.state_dict.return_value = {
-            "layers.0.weight": torch.zeros(2, 2),
-        }
-        trainer.model.get_base_model.return_value.config.to_json_file = MagicMock()
-
+        trainer.model.save_pretrained = MagicMock()
+        trainer.rollout_engine = MagicMock()
         return trainer
 
-    def test_merge_adapter_called(self, tmp_path):
+    def test_save_pretrained_called(self, tmp_path):
         from dojo.trainer import GRPOTrainer
         trainer = self._make_trainer_mock(tmp_path)
-        with patch("dojo.weight_sync.safetensors.torch.save_file"), \
-             patch("dojo.weight_sync.hf_hub_download", side_effect=Exception("skip")):
-            GRPOTrainer._sync_weights_to_vllm(trainer)
-        trainer.model.merge_adapter.assert_called_once()
+        GRPOTrainer._sync_weights_to_vllm(trainer)
+        trainer.model.save_pretrained.assert_called_once()
 
-    def test_unmerge_adapter_called(self, tmp_path):
+    def test_load_lora_adapter_called(self, tmp_path):
         from dojo.trainer import GRPOTrainer
         trainer = self._make_trainer_mock(tmp_path)
-        with patch("dojo.weight_sync.safetensors.torch.save_file"), \
-             patch("dojo.weight_sync.hf_hub_download", side_effect=Exception("skip")):
-            GRPOTrainer._sync_weights_to_vllm(trainer)
-        trainer.model.unmerge_adapter.assert_called_once()
+        GRPOTrainer._sync_weights_to_vllm(trainer)
+        trainer.rollout_engine.load_lora_adapter.assert_called_once()
 
-    def test_vllm_needs_reload_flag_set(self, tmp_path):
-        """After sync, _vllm_needs_reload should be True (reload happens on wake_up)."""
+    def test_adapter_saved_to_correct_path(self, tmp_path):
         from dojo.trainer import GRPOTrainer
         trainer = self._make_trainer_mock(tmp_path)
-        with patch("dojo.weight_sync.safetensors.torch.save_file"), \
-             patch("dojo.weight_sync.hf_hub_download", side_effect=Exception("skip")):
-            GRPOTrainer._sync_weights_to_vllm(trainer)
-        assert trainer._vllm_needs_reload is True
+        GRPOTrainer._sync_weights_to_vllm(trainer)
+        expected_dir = tmp_path / ".lora_adapter"
+        trainer.model.save_pretrained.assert_called_once_with(expected_dir)
+        trainer.rollout_engine.load_lora_adapter.assert_called_once_with(str(expected_dir))
 
-    def test_state_dict_base_model_prefix_stripped(self, tmp_path):
-        """Keys with 'base_model.model.' prefix are cleaned before saving."""
-        import torch
-        from dojo.trainer import GRPOTrainer
-        trainer = self._make_trainer_mock(tmp_path)
-        trainer.model.state_dict.return_value = {
-            "base_model.model.layers.0.weight": torch.zeros(2, 2),
-        }
-        saved = {}
-        def capture_save(sd, path):
-            saved.update(sd)
-        with patch("dojo.weight_sync.safetensors.torch.save_file", side_effect=capture_save), \
-             patch("dojo.weight_sync.hf_hub_download", side_effect=Exception("skip")):
-            GRPOTrainer._sync_weights_to_vllm(trainer)
-        assert "layers.0.weight" in saved
-        assert "base_model.model.layers.0.weight" not in saved
-
-    def test_state_dict_base_layer_suffix_stripped(self, tmp_path):
-        """Keys with '.base_layer' are cleaned (LoRA linear wrapper artifact)."""
-        import torch
-        from dojo.trainer import GRPOTrainer
-        trainer = self._make_trainer_mock(tmp_path)
-        trainer.model.state_dict.return_value = {
-            "layers.0.weight.base_layer": torch.zeros(2, 2),
-        }
-        saved = {}
-        def capture_save(sd, path):
-            saved.update(sd)
-        with patch("dojo.weight_sync.safetensors.torch.save_file", side_effect=capture_save), \
-             patch("dojo.weight_sync.hf_hub_download", side_effect=Exception("skip")):
-            GRPOTrainer._sync_weights_to_vllm(trainer)
-        assert "layers.0.weight" in saved
-        assert "layers.0.weight.base_layer" not in saved
 
 # ── Tests: vllm_sync_every logic ─────────────────────────────────────────────
 

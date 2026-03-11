@@ -23,7 +23,7 @@ Dojo implements [Group Relative Policy Optimization (GRPO)](https://arxiv.org/ab
 - **`@tool` decorator** — attach OpenAI-format JSON schemas to plain Python functions
 - **Per-episode state** — thread-safe `EpisodeStore` lets tools read/write state scoped to the current episode via `get_episode_id()`
 - **LoRA fine-tuning via PEFT** — reference log-probs computed by disabling the adapter (no second model copy needed)
-- **vLLM sleep/wake GPU sharing** — vLLM offloads weights to CPU during training, wakes up for rollouts; merged LoRA weights synced to disk for in-place reload
+- **vLLM sleep/wake GPU sharing** — vLLM offloads weights to CPU during training, wakes up for rollouts; native LoRA serving swaps adapters near-instantly between training steps
 - **Microbatched log-prob computation** — configurable `logprob_micro_batch_size` to avoid OOM on hybrid architectures
 - **Gradient checkpointing** — recompute activations during backward to reduce memory at ~30% extra compute
 - **W&B and HF Hub integration** — optional Weights & Biases logging and periodic adapter pushes to Hugging Face Hub
@@ -107,7 +107,7 @@ All hyperparameters are read from `config.json`.
 | `dojo/rollout.py` | Shared tool-call parsing and execution logic |
 | `dojo/logprobs.py` | `build_token_sequences`, `compute_logprobs`, `compute_ref_logprobs` — tokenization and forward passes |
 | `dojo/loss.py` | `grpo_loss` (clipped surrogate + KL), `normalize_per_group` (per-group z-score advantages) |
-| `dojo/weight_sync.py` | `sync_lora_weights_to_disk` — merge LoRA weights and save safetensors for vLLM reload |
+| `dojo/weight_sync.py` | `sync_lora_weights_to_disk` — merge LoRA into base weights and save safetensors (for offline export, not used in the training loop) |
 | `dojo/dataset.py` | `load_dataset` — loads local JSONL files or HuggingFace datasets |
 
 ## API Reference
@@ -164,9 +164,10 @@ episode.tool_results()  # list of tool result strings
 
 ```python
 engine = VLLMRolloutEngine(tokenizer, config, registry, store)
-engine.rollout_batch(rows)   # batched multi-turn rollout
-engine.sleep()               # offload vLLM weights to CPU
-engine.wake_up()             # reload weights for inference
+engine.rollout_batch(rows)           # batched multi-turn rollout
+engine.load_lora_adapter(path)       # swap LoRA adapter for next rollout
+engine.sleep()                       # offload vLLM weights to CPU
+engine.wake_up()                     # restore weights to GPU
 ```
 
 ### `load_dataset`

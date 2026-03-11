@@ -44,6 +44,8 @@ class GRPOConfig:
     vllm_gpu_memory_utilization: float = 0.4  # leave room for training
     vllm_sync_every: int = 1  # sync weights every N gradient steps
     vllm_enable_sleep_mode: bool = True  # offload vLLM weights during train phases
+    vllm_enable_lora: bool = True  # enable native LoRA serving; False for eval-only
+    vllm_max_lora_rank: int | None = None  # defaults to lora_rank if None
 
     # Hugging Face Hub (optional — reads HF_TOKEN from env)
     hf_repo_id: str | None = None  # e.g. "myorg/my-model"; None = disabled

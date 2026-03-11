@@ -19,7 +19,6 @@ from .logprobs import build_token_sequences, compute_logprobs, compute_ref_logpr
 from .loss import grpo_loss, normalize_per_group
 from .tools import ToolRegistry
 from .vllm_rollout import VLLMRolloutEngine
-from .weight_sync import sync_lora_weights_to_disk
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +124,6 @@ class GRPOTrainer:
             store=self.store,
             episode_init_fn=episode_init_fn,
         )
-        self._vllm_needs_reload = False
 
     def train(self, dataset):
         """Run the full GRPO training loop over ``dataset``.
@@ -158,10 +156,6 @@ class GRPOTrainer:
 
                 if cfg.vllm_enable_sleep_mode:
                     self.rollout_engine.wake_up()
-
-                if self._vllm_needs_reload:
-                    self.rollout_engine.reload_weights()
-                    self._vllm_needs_reload = False
 
                 all_episode_groups = self.rollout_engine.rollout_batch(batch_rows)
                 for episodes, row in zip(all_episode_groups, batch_rows):
@@ -246,7 +240,7 @@ class GRPOTrainer:
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
-                    # Sync merged LoRA weights to vLLM periodically
+                    # Sync LoRA adapter to vLLM periodically
                     if global_step % cfg.vllm_sync_every == 0:
                         self._sync_weights_to_vllm()
 
@@ -307,9 +301,10 @@ class GRPOTrainer:
         self.rollout_engine.cleanup()
 
     def _sync_weights_to_vllm(self) -> None:
-        """Merge LoRA → save with clean weight names → mark for vLLM reload."""
-        sync_lora_weights_to_disk(self.model, self.config.model_name, self.config.output_dir)
-        self._vllm_needs_reload = True
+        """Save LoRA adapter to disk and load into vLLM for next rollout."""
+        adapter_dir = Path(self.config.output_dir) / ".lora_adapter"
+        self.model.save_pretrained(adapter_dir)
+        self.rollout_engine.load_lora_adapter(str(adapter_dir))
 
     def _push_to_hub(self, tag: str) -> None:
         """Push PEFT adapter weights (not base weights) to the HF Hub."""
