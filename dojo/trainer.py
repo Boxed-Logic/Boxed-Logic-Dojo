@@ -156,13 +156,12 @@ class GRPOTrainer:
                 # ── Phase 1: Rollout ──────────────────────────────────────────
                 self.model.eval()
 
-                if self._vllm_needs_reload:
-                    # Reinitialize engine from sync dir (starts awake).
-                    # Don't wake the old engine — it's about to be destroyed.
-                    self.rollout_engine.reinitialize()
-                    self._vllm_needs_reload = False
-                elif cfg.vllm_enable_sleep_mode:
+                if cfg.vllm_enable_sleep_mode:
                     self.rollout_engine.wake_up()
+
+                if self._vllm_needs_reload:
+                    self.rollout_engine.reload_weights()
+                    self._vllm_needs_reload = False
 
                 all_episode_groups = self.rollout_engine.rollout_batch(batch_rows)
                 for episodes, row in zip(all_episode_groups, batch_rows):

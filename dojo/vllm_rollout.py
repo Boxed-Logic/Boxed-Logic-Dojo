@@ -59,6 +59,12 @@ class VLLMRolloutEngine:
 
         self._episode_init_fn = episode_init_fn
 
+        # Build HF-name → vLLM-internal-name mapping for direct weight updates.
+        # During initial load, vLLM may rename/split weights (e.g. fuse q/k/v).
+        # We compare our saved HF names against vLLM's internal names by shape
+        # to build a reliable mapping.
+        self._weight_name_map: dict[str, str] | None = self._build_weight_map()
+
         # Size pool for rollout_batch
         self._executor = ThreadPoolExecutor(
             max_workers=config.batch_size * config.num_generations * 2
@@ -158,12 +164,139 @@ class VLLMRolloutEngine:
 
         return groups
 
-    def reinitialize(self) -> None:
+    def _build_weight_map(self) -> dict[str, str] | None:
+        """Build a mapping from HF weight names → vLLM internal param names.
+
+        Compares the original HF safetensors keys against the live vLLM model's
+        named_parameters.  Matches first by exact name, then by unique shape
+        for any remaining unmatched params.
+
+        Returns the mapping, or None if too few params could be matched
+        (caller should fall back to engine reinitialization).
+        """
+        import safetensors.torch
+        from .weight_sync import _get_original_weight_map
+
+        try:
+            runner = (
+                self.llm.llm_engine
+                .model_executor.driver_worker.model_runner
+            )
+            vllm_params = dict(runner.model.named_parameters())
+        except Exception as e:
+            logger.warning("Cannot access vLLM model internals: %s", e)
+            return None
+
+        # Get HF weight names from the original model
+        original_map = _get_original_weight_map(self.config.model_name)
+        if not original_map:
+            return None
+        hf_names = set(original_map.keys())
+
+        # Pass 1: exact name match
+        name_map: dict[str, str] = {}  # hf_name → vllm_name
+        matched_vllm: set[str] = set()
+        for hf_name in hf_names:
+            if hf_name in vllm_params:
+                name_map[hf_name] = hf_name
+                matched_vllm.add(hf_name)
+
+        # Pass 2: for unmatched HF names, try matching by unique shape
+        unmatched_hf = hf_names - set(name_map.keys())
+        unmatched_vllm = {
+            n: p.shape for n, p in vllm_params.items() if n not in matched_vllm
+        }
+        if unmatched_hf and unmatched_vllm:
+            # Load one HF shard to get shapes
+            sync_dir = Path(self.config.output_dir).resolve() / ".vllm_sync"
+            hf_shapes: dict[str, tuple] = {}
+            for sf_file in sorted(sync_dir.glob("model*.safetensors")):
+                if sf_file.name.endswith(".json"):
+                    continue
+                with safetensors.torch.safe_open(str(sf_file), framework="pt") as f:
+                    for key in f.keys():
+                        if key in unmatched_hf:
+                            hf_shapes[key] = tuple(f.get_tensor(key).shape)
+
+            # Group vLLM params by shape
+            from collections import defaultdict
+            shape_to_vllm: dict[tuple, list[str]] = defaultdict(list)
+            for vn, vs in unmatched_vllm.items():
+                shape_to_vllm[tuple(vs)].append(vn)
+
+            for hf_name, hf_shape in hf_shapes.items():
+                candidates = shape_to_vllm.get(hf_shape, [])
+                if len(candidates) == 1:
+                    name_map[hf_name] = candidates[0]
+                    matched_vllm.add(candidates[0])
+
+        coverage = len(name_map) / len(hf_names) if hf_names else 0
+        logger.info(
+            "vLLM weight map: %d/%d HF names mapped (%.0f%% coverage)",
+            len(name_map), len(hf_names), coverage * 100,
+        )
+
+        if coverage < 0.9:
+            logger.warning(
+                "Weight map coverage too low — will use engine reinitialization"
+            )
+            return None
+
+        return name_map
+
+    def reload_weights(self) -> None:
+        """Update vLLM model weights from the sync directory.
+
+        Uses the HF→vLLM name mapping built at init to copy merged weight
+        tensors directly into vLLM's parameters (~1-2s).  Falls back to
+        full engine reinitialization if the mapping is unavailable.
+        """
+        if self._weight_name_map is None:
+            self._reinitialize()
+            return
+
+        import safetensors.torch
+        import torch
+
+        sync_dir = Path(self.config.output_dir).resolve() / ".vllm_sync"
+
+        # Load merged weights from saved shard files
+        weights: dict[str, torch.Tensor] = {}
+        for sf_file in sorted(sync_dir.glob("model*.safetensors")):
+            if sf_file.name.endswith(".json"):
+                continue
+            weights.update(safetensors.torch.load_file(str(sf_file)))
+
+        if not weights:
+            logger.warning("No weights in %s — falling back to reinitialize", sync_dir)
+            self._reinitialize()
+            return
+
+        try:
+            runner = (
+                self.llm.llm_engine
+                .model_executor.driver_worker.model_runner
+            )
+            vllm_params = dict(runner.model.named_parameters())
+
+            updated = 0
+            for hf_name, vllm_name in self._weight_name_map.items():
+                if hf_name in weights and vllm_name in vllm_params:
+                    param = vllm_params[vllm_name]
+                    param.data.copy_(
+                        weights[hf_name].to(device=param.device, dtype=param.dtype)
+                    )
+                    updated += 1
+
+            logger.info("Direct weight update: %d parameters copied", updated)
+        except Exception as e:
+            logger.warning("Direct weight update failed (%s), reinitializing", e)
+            self._reinitialize()
+
+    def _reinitialize(self) -> None:
         """Destroy and recreate the vLLM engine from the sync directory.
 
-        This is used instead of reload_weights() because vLLM's in-place
-        weight reload corrupts hybrid Mamba models (producing gibberish).
-        A fresh LLM() uses the same initial-load code path that works.
+        Slow fallback (~10-20s) used when direct weight copy fails.
         """
         import gc
         import torch
