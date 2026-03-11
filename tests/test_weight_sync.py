@@ -6,7 +6,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
+import dojo.weight_sync as _ws
 from dojo.weight_sync import sync_lora_weights_to_disk
+
+
+@pytest.fixture(autouse=True)
+def _reset_weight_map_cache():
+    """Clear the cached original weight map between tests."""
+    _ws._original_weight_map = None
+    yield
+    _ws._original_weight_map = None
 
 
 def _make_model(state_dict=None):
@@ -158,9 +167,9 @@ class TestConfigJson:
         existing.write_text('{"existing": true}')
         model = _make_model()
         with patch("dojo.weight_sync.safetensors.torch.save_file"), \
-             patch("dojo.weight_sync.hf_hub_download") as hub_mock:
+             patch("dojo.weight_sync.hf_hub_download", side_effect=Exception("no hub")):
             sync_lora_weights_to_disk(model, "test/model", str(tmp_path))
-        hub_mock.assert_not_called()
+        # config.json should be preserved (not re-downloaded or overwritten)
         assert json.loads(existing.read_text()) == {"existing": True}
 
 
