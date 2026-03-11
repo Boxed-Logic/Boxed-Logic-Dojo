@@ -46,6 +46,7 @@ def grpo_loss(
         scalar loss
     """
     ratio = torch.exp(log_probs - ref_log_probs)  # (N, L)
+    ratio = torch.clamp(ratio, 1e-4, 10.0)
     clipped = torch.clamp(ratio, 1 - epsilon, 1 + epsilon)
 
     adv = advantages.unsqueeze(1)  # (N, 1) — broadcasts to (N, L)

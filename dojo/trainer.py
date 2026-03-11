@@ -9,6 +9,7 @@ from typing import Callable
 import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 
 from peft import get_peft_model, LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -95,6 +96,13 @@ class GRPOTrainer:
         # ── Optimizer (LoRA params only) ──────────────────────────────────────
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = AdamW(trainable_params, lr=config.learning_rate)
+
+        # Linear warmup scheduler
+        warmup = config.warmup_steps
+        self.scheduler = LambdaLR(
+            self.optimizer,
+            lr_lambda=lambda step: min(1.0, (step + 1) / max(warmup, 1)),
+        )
 
         # ── Support infrastructure ────────────────────────────────────────────
         self.store = EpisodeStore()
@@ -238,6 +246,7 @@ class GRPOTrainer:
                 if global_step % cfg.gradient_accumulation_steps == 0:
                     clip_grad_norm_(self.model.parameters(), 1.0)
                     self.optimizer.step()
+                    self.scheduler.step()
                     self.optimizer.zero_grad()
 
                     # Sync LoRA adapter to vLLM periodically

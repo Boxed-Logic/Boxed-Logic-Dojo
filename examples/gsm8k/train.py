@@ -37,11 +37,10 @@ def main():
 
     dataset = load_dataset(cfg["data"])
 
-    lora_rank = cfg["lora_rank"]
     config = GRPOConfig(
         model_name=cfg["model"],
-        lora_rank=lora_rank,
-        lora_alpha=lora_rank,
+        lora_rank=cfg["lora_rank"],
+        lora_alpha=cfg.get("lora_alpha", cfg["lora_rank"]),
         target_modules=cfg["target_modules"],
         num_generations=cfg["num_generations"],
         max_turns=cfg["max_turns"],

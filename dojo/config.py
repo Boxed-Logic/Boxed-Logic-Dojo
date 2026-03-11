@@ -33,6 +33,9 @@ class GRPOConfig:
     temperature: float
     top_p: float
 
+    # Scheduler
+    warmup_steps: int = 20
+
     # Misc
     seed: int
     device: str

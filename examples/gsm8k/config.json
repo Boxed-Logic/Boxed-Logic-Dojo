@@ -5,7 +5,8 @@
     "output_dir": "./gsm8k_output",
 
     "lora_rank": 32,
-    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "shared_mlp.input_linear", "shared_mlp.output_linear", "mamba.in_proj"],
+    "lora_alpha": 16,
+    "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "shared_mlp.input_linear", "shared_mlp.output_linear"],
 
     "num_generations": 8,
     "max_turns": 3,
@@ -15,7 +16,7 @@
     "batch_size": 16,
     "num_epochs": 2,
     "gradient_accumulation_steps": 4,
-    "learning_rate": 1e-5,
+    "learning_rate": 1e-6,
 
     "epsilon": 0.2,
     "beta": 0.0,
