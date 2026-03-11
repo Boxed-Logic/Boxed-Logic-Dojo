@@ -7,19 +7,19 @@
     "lora_rank": 32,
     "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "shared_mlp.input_linear", "shared_mlp.output_linear", "mamba.in_proj"],
 
-    "num_generations": 16,
-    "max_turns": 5,
+    "num_generations": 8,
+    "max_turns": 3,
     "max_completion_length": 2048,
     "max_total_tokens": 4096,
 
-    "batch_size": 8,
+    "batch_size": 16,
     "num_epochs": 2,
-    "gradient_accumulation_steps": 2,
-    "learning_rate": 0.0001,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 1e-5,
 
     "epsilon": 0.2,
     "beta": 0.0,
-    "temperature": 0.9,
+    "temperature": 0.7,
     "top_p": 0.95,
 
     "vllm_gpu_memory_utilization": 0.5,

@@ -41,7 +41,7 @@ def main():
     config = GRPOConfig(
         model_name=cfg["model"],
         lora_rank=lora_rank,
-        lora_alpha=lora_rank * 2,
+        lora_alpha=lora_rank,
         target_modules=cfg["target_modules"],
         num_generations=cfg["num_generations"],
         max_turns=cfg["max_turns"],
