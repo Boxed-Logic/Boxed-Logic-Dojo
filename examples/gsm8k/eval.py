@@ -7,7 +7,8 @@ Prints a running pass rate after each batch and a final summary.
 Usage:
     python eval.py                             # use config.json defaults
     python eval.py --config config.json
-    python eval.py --model ./gsm8k_output      # override model (post-training eval)
+    python eval.py --model ./gsm8k_output      # auto-detects PEFT adapter
+    python eval.py --adapter ./gsm8k_output    # explicit adapter path
 """
 from __future__ import annotations
 import os
@@ -82,12 +83,31 @@ def main():
     parser.add_argument(
         "--model",
         default=None,
-        help="Model name or path. Overrides config.json eval.model (useful for post-training eval).",
+        help="Base model name or path. Overrides config.json eval.model.",
+    )
+    parser.add_argument(
+        "--adapter",
+        default=None,
+        help="Path to a PEFT/LoRA adapter directory to evaluate (loaded on top of the base model).",
     )
     args = parser.parse_args()
 
     cfg = json.loads(Path(args.config).read_text())["eval"]
-    model = args.model or cfg["model"]
+
+    # Resolve adapter and base model.  If --adapter is given, the base model
+    # is --model (or config default).  For backward compat, if --model points
+    # to a PEFT adapter dir (contains adapter_config.json) and no --adapter
+    # flag, auto-detect and split.
+    adapter_path = args.adapter
+    base_model = args.model or cfg["model"]
+
+    if adapter_path is None and Path(base_model).is_dir():
+        ac = Path(base_model) / "adapter_config.json"
+        if ac.exists():
+            adapter_path = base_model
+            base_model = json.loads(ac.read_text()).get(
+                "base_model_name_or_path", cfg["model"]
+            )
 
     rows = load_dataset(cfg["test_data"])
     # load_dataset returns a list[dict] for local JSONL files.  If an HF
@@ -99,8 +119,15 @@ def main():
     if cfg.get("limit") is not None:
         rows = rows[: cfg["limit"]]
 
-    config = _make_eval_config(model, cfg)
-    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+    config = _make_eval_config(base_model, cfg)
+    if adapter_path:
+        config.vllm_enable_lora = True
+        # Read adapter rank so vLLM sets max_lora_rank correctly
+        ac_file = Path(adapter_path) / "adapter_config.json"
+        if ac_file.exists():
+            config.lora_rank = json.loads(ac_file.read_text()).get("r", config.lora_rank)
+
+    tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
@@ -112,6 +139,9 @@ def main():
         registry=registry,
         store=store,
     )
+
+    if adapter_path:
+        engine.load_lora_adapter(str(Path(adapter_path).resolve()))
 
     correct = total = 0
     for i in range(0, len(rows), cfg["batch_size"]):
